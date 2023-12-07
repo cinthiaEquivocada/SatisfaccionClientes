@@ -1,0 +1,842 @@
+
+
+```{r}
+require(caret)
+require(randomForest)
+require(ggplot2)
+require(dplyr)
+require(tidyverse)
+require(tidyselect)
+require(RcmdrMisc)
+require(carData)
+require(MASS)
+require(car)
+require(kableExtra)
+require(stargazer)
+require(recipes)
+require(e1071)
+require(ranger)
+require(rattle)
+require(pROC)
+require(kernlab)
+require(ROSE)
+```
+
+\newpage
+
+
+
+# Análisis descriptivo de los datos
+
+
+
+```{r}
+#cargar datos
+bank <- read.csv("C:/Users/cinthia/OneDrive - UPV EHU/Desktop/Unizar/mineria/Clasificacion/brazil.csv", stringsAsFactors=TRUE)
+
+#creamos una copia de la BD para ir manipulandola sin alterar la original
+bank.braz<-bank
+
+#la descripcion de la data dice que education e sfactor
+bank.braz$education<-as.factor(bank.braz$education)
+
+
+#View(ban.braz)
+
+```
+
+
+```{r}
+#creacion variable ok como indicador de satisfaccion
+#creamso que satisfecho sea a partir del rango de satisfaccion 3-4
+ok<-ifelse(bank.braz$satisfaction>2,0,1)
+ok<-factor(ok,labels = c("Satisfecho","No.Satisfecho")) #CUIDADO: 0 es 1st label
+#agregar a base de datos
+bank.braz<-cbind(ok,bank.braz)
+#quitamos variables satisfacccion y id
+bank.braz<-bank.braz[,c(-2,-3,-4)]
+head(bank.braz$ok,4)
+```
+
+
+```{r fig.pos="H", include=FALSE}
+#ANALISIS DE DATOS
+#==========================================================================
+# Número de datos ausentes por variable
+look.na<-map_dbl(bank.braz, .f = function(x){sum(is.na(x))})
+(look.na)%>%kable(booktabs=TRUE)%>%
+kable_styling(
+latex_options = c("condensed","hold_position"),
+position = "center",
+full_width = FALSE)
+
+```
+
+```{r}
+#ANALISIS DE DATOS
+#===========================================================================
+#Verificamos si hay datos con valores ausentes pero sin la etiqueta del NA.
+#datos faltantes en " "
+bank.braz %>% map_lgl(.f = function(x){any(!is.na(x) & x == "")})
+```
+
+
+```{r,fig.align='center'}
+#variables cuantitativas
+featurePlot(x = bank.braz[,c("age","pincome")], 
+            y = bank.braz$ok, 
+            plot = "density",
+            strip=strip.custom(par.strip.text=list(cex=.6)),
+            scales = list(x = list(relation="free"), 
+                          y = list(relation="free")))
+```
+
+```{r fig.align='center',fig.pos="H"}
+
+#grafico variables cualitativas
+featurePlot(x = bank.braz[,c(5:7,9:22)], 
+            y = bank.braz$ok, 
+            plot = "box",
+            strip=strip.custom(par.strip.text=list(cex=.6)),
+            scales = list(x = list(relation="free"), 
+                          y = list(relation="free"),cex=0.6),
+            auto.key = list(columns = 2))
+
+featurePlot(x = bank.braz[,c(23:length(bank.braz))], 
+            y = bank.braz$ok, 
+            plot = "box",
+            strip=strip.custom(par.strip.text=list(cex=.6)),
+            scales = list(x = list(relation="free"), 
+                          y = list(relation="free"),cex=0.6),
+            auto.key = list(columns = 2))
+```
+
+
+```{r include=FALSE}
+#cor.test(bank.braz$age,bank.braz$pincome,method = "pearson")
+
+bank_cor = cor(bank.braz[,c("age","pincome")])
+findCorrelation(bank_cor)
+# Busco si hay combinaciones lineales
+findLinearCombos(bank.braz[,c("age","pincome")])
+```
+
+
+```{r eval=FALSE, include=FALSE}
+prop.table(table(bank.braz$ok,bank.braz$education),margin=1)%>% round(digits = 2)
+prop.table(table(bank.braz$ok,bank.braz$satisfaction),margin=1)%>% round(digits = 2)
+prop.table(table(bank.braz$ok,bank.braz$gender),margin=1)%>% round(digits = 2)
+
+```
+
+```{r fig.align='center'}
+#Graficos de barras para variables cualitativas
+#===============================================================
+
+#education
+p1<-ggplot(bank.braz, aes(x = education, y = ..count.., fill = ok)) +
+  geom_bar() +
+  scale_fill_manual(values = c("gray50", "cyan4")) +
+  labs(title = "") +
+  theme_grey() +
+  theme(legend.position = "bottom")+xlab("Educación")+ylab("")
+
+#gender
+p2<-ggplot(bank.braz, aes(x = gender, y = ..count.., fill = ok)) +
+  geom_bar() +
+  scale_fill_manual(values = c("gray50", "cyan4")) +
+  labs(title = "") +
+  theme_grey() +
+  theme(legend.position = "bottom")+xlab("Género")+ylab("")
+require(ggpubr)
+ggarrange(p1,p2)
+```
+
+
+```{r}
+#para tratar el issue de las desproporciones en la distribucion de esta variable
+bank.braz$education<-as.numeric(bank.braz$education)
+bank.braz$grup_educ<-ifelse(bank.braz$education>3,1,0)
+bank.braz$grup_educ<-factor(bank.braz$grup_educ,labels=c("Medio-Superior","Medio-Bajo"))
+
+#Quitamos educacion del dataset
+bank.braz<-bank.braz[-2]
+```
+
+```{r fig.align='center'}
+ggplot(bank.braz, aes(x = ok, y = ..count.., fill = ok)) +
+  geom_bar() +
+  scale_fill_manual(values = c("gray50", "cyan4")) +
+  labs(title = "") +
+  theme_grey() +
+  theme(legend.position = "bottom")+ylab("") +xlab("")
+```
+
+# Division de los datos
+
+```{r}
+#DIVISION DE DATOS
+#===============================================================================
+#Crear division de datos
+set.seed(123456)
+traindat<-createDataPartition(bank.braz$ok,p=0.7,list=FALSE,times=1)
+train.bank<-bank.braz[traindat,]
+test.bank<-bank.braz[-traindat,]
+```
+
+Aunque por defecto el comando $createDataPartition$ genera una distribución aproximada en las dos muestras, es importante probar que esto se cumple en las dimensiones que poseen nuestra variable dependiente en los datos originales para ambas submuestras de test y train:
+```{r fig.pos="H"}
+#Probar division de datos accurancy
+(prop.table(table(train.bank$ok))*100)%>%kable(digits = 2,caption = "\\label{prop1} Proporción asegurada en muestra de entrenamiento",booktabs=TRUE,col.names = c("Categoría","Porcentaje"))%>%
+kable_styling(
+latex_options = c("condensed","hold_position"),
+position = "center",
+full_width = FALSE) #en datos de entrenamiento
+
+(prop.table(table(test.bank$ok))*100)%>%kable(digits = 2,caption = "\\label{prop2} Proporción asegurada en muestra de pruebas",booktabs=TRUE,col.names = c("Categoría","Porcentaje"))%>%
+kable_styling(
+latex_options = c("condensed","hold_position"),
+position = "center",
+full_width = FALSE) #en datos de prueba
+```
+Esto se asegura para la distribución de la variable dependiente, sin embargo, no es asi para las variables independientes  pudiendo tener desbalances en las variables que generen malos resultados en el modelo a estimar. Algunos de las formas de prevenir es la eliminación de variables con varianza cero o la selección recursiva de las predictoras, técnicas que veremos en los próximos apartados.
+
+## Pre-procesado de los datos
+Otro paso importante en la ejecución de modelos de aprendizaje automático es el pre-procesado de los datos algo que se hace relativamente menos arduo al utilizar el paquete *caret*. Este pre-procesado implica realizar aquellas transformaciones de los datos que permiten su uso en modelos con set de variables heterogéneas algo que además es un principio importante para la ejecución de algoritmos que tengan resultado eficientes y verificables, este principio plantea que ninguna información procedente de las observaciones de test puede participar o influir en el ajuste del modelo.
+
+Existen diversas técnicas de pre-procesado pero en este documento se presentan las disponibles con el paquete *caret* y que aplican a nuestros datos:
+
+* Exclusión de variables con varianza próxima a cero
+* Estandarización de las variables numéricas
+* Binarización de las variables cualitativas
+
+La primera es importante debido a que incluir variables con varianza cero agregaría ruido al modelo que luego afectaría su capacidad predictiva. 
+
+La segunda se realiza con la finalidad de no generar desviaciones en las estimaciones en vista de que el dataset se compone de variables tanto categóricas como númericas.
+
+Por último, se binarizan las variables que son categóricas (factor) esto se hace con la finalidad de aumentar la capacidad explicativas de estas haciendo que cada nivel se convierta en una variable (individual) que representa su distribución con relación a cada cliente. A este proceso también se le conoce como *one hot encoding*. 
+
+El proceso siguiente: 1. Se hace la partición de datos en prueba y entrenamiento, 2. Se crea un objeto *recipe* que hace de contenedor de las transformaciones que se han de aplicar en las variables explicativas 3. Se aplican, ejecutan y guardan cada transformación y 4. Finalmente se crean dos nuevos dataset con igual partición que la de entrenameinto y prueba pero con las transformaciones aplicadas.
+
+```{r include=FALSE}
+#VARIANZA
+#===================================================================
+#Identificamos varianza cero en data de entrenamiento
+variance<-nearZeroVar(bank.braz,saveMetrics = F)
+variance
+names(train.bank[,c(variance)]) #nombres de vaiables detectadas
+
+```
+
+
+```{r}
+#PREPROCESADO
+#=============================================================================
+#creamos objeto que tendra los ajsutes que se requieren hacer a la data train
+nms<-names(bank.braz)
+frml<-as.formula(paste("ok ~",paste(nms[!nms %in% "ok"],collapse = "+")))
+
+#ajuste de datos sin varianza cero para
+data.rep<-recipe(frml,train.bank)%>% step_nzv(all_predictors())
+
+#En el mismo recipiente hacemos una centralizacion de las variables numericas (age, pincome) 
+data.rep<-data.rep%>%step_center("age","pincome")
+data.rep<-data.rep%>%step_scale("age","pincome")
+
+```
+
+
+```{r}
+#PREPROCESADO
+#========================================================================
+# One-Hot Encoding para binarizar variables que son factor o caracter haciendo una variable por cada categoria
+data.rep<-data.rep%>% step_dummy(all_nominal(), -all_outcomes())
+
+```
+
+
+```{r include=FALSE}
+#APLICACION DEL PRE PROCESADO
+#===============================================================================
+#entrenamos los datos con los ajustess identificados
+train.rep<-prep(data.rep,training = train.bank)
+
+#se aplican a los datos partidos
+tr.bank<-bake(train.rep,new_data=train.bank)
+te.bank<-bake(train.rep,new_data=test.bank)
+
+
+```
+
+# Selección de variables
+
+Para entrenar un modelo es bueno seleccionar solo las variables que realmente poseen una relación explicativa con la variable dependiente, la inclusión indiscriminada de variables puede caer en un proceso de *overfitting*. Para la selección de las variables que estariamos usando en el modelo de clasificación también haremos uso del paquete *caret* y sus funciones con la finalidad de evaluar cual se aplica mejor a las variables de nuestro dataset.
+
+En ese sentido, usaremos *Wrappe:rfe* y *filter*: el primero realiza la selección usando un algoritmo recursivo que genera múltiples modelos con la metodología *backward* incorporando y/o eliminando variables en cada iteración según su aporte en términos de algun criterio de bondad de ajuste. Para excluir los datos de test del proceso de selección de predictores el algoritmo se puede incluir dentro de un bucle de *validación cruzada *o *bootstrapping* que solo emplee los datos de entrenamiento. El accurancy (ACC) de cada modelo se obtiene agregando los errores obtenidos para cada conjunto de validación. Para este proceso se puede usar cualquier modelo incluido en *caret* pero estaremos usando el que replica las estimaciones como *Random Forest*.
+
+De su lado filter esta mas acotado al proceso de modelos *OLS* haciendo la validación de la significancia de cada variable antes de calcular el modelo e incluyendolas en función de si lo son o no con relación a la variable dependiente , los test que usa para este son *ANOVA* para variables categóricas y *GAMS* para variables continuas. De igual forma se aplica un proceso de sampling como validación cruzada CV o boostrapping.
+
+En este caso como trabajamos modelos de clasificación el criterio de mejor modelo/set de variables seria el accurancy (ACC) que se refiere a la capacidad de predicciones correctas del modelo en relación a las clasificaciones realizadas (aunque estaremos analizando otras como sensibilidad y especificidad ante algunos sesgos del ACC).
+
+$$ ACC=\frac{TN+TP}{P+N}$$
+
+Donde: 
+
+* TP= True prositive, verdaderos casos positivos según el modelo.
+
+* TN= True negative, verdaderos casos negativos según el modelo.
+
+* P= caso positivos en la data.
+
+* N= casos negativos en la data.
+
+```{r}
+# FILTRADO DE PREDICTORES MEDIANTE ANOVA, RANDOM FOREST Y CV-REPETIDA
+#===================================================================
+
+n<-10#k-fold
+rep<-30 #repeticiones
+
+set.seed(342)
+seed<-sample.int(1000,n*rep+1) #size igual a B+1 con B=n*rep
+
+# Control del filtrado
+ctrl.fil <- sbfControl(functions = rfSBF, method = "repeatedcv",
+                            number = n, repeats = rep,
+                            seeds = seed, verbose = FALSE, 
+                            saveDetails = TRUE, allowParallel = TRUE)
+set.seed(234)
+rf_sbf <- sbf(ok ~ ., data = tr.bank,
+              sbfControl = ctrl.fil,
+              # argumentos para el modelo de evaluación
+              ntree = 500)
+
+```
+
+```{r eval=FALSE, include=FALSE}
+#resultados de la seleccion por filtrado
+rf_sbf
+rf_sbf$optVariables #variables seleccionadas
+rf_sbf$fit
+```
+
+
+```{r}
+#SELECCION DE VARIABLES CON RFE
+#================================================================================
+# Tamaño de los conjuntos de predictores analizados
+subsets <-c(1:5, 10, 15, 20, 25)
+ # c(3:11)
+
+# Número de resamples para el proceso de bootstrapping
+repit<- 30
+
+# Se crea una semilla para cada repetición de validación. Esto solo es necesario si
+# se quiere asegurar la reproducibilidad de los resultados, ya que la validación
+# cruzada y el bootstrapping implican selección aleatoria.
+
+# El número de semillas necesarias depende del número total de repeticiones: 
+# Se necesitan B+1 elementos donde B es el número total de particiones (CV) o
+# resampling (bootstrapping). Los primeros B elementos deben ser vectores formados
+# por M números enteros, donde M es el número de modelos ajustados, que en este caso
+# se corresponde con el número de tamaños. El último elemento solo necesita un único
+# número para ajustar el modelo final.
+set.seed(123)
+seeds <- vector(mode = "list", length = repit + 1)
+for (i in 1:repit) {
+  seeds[[i]] <- sample.int(1000, (length(subsets)+1))
+} 
+seeds[[repit + 1]] <- sample.int(1000, 1)
+
+# Se crea un control de entrenamiento donde se define el tipo de modelo empleado
+# para la selección de variables, en este caso random forest, la estrategia de
+# resampling, en este caso bootstrapping con n repeticiones, y las semillas para
+# cada repetición. Con el argumento returnResamp = "all" se especifica que se
+# almacene la información de todos los modelos generados en todas las repeticiones.
+ctrl.rfe <- rfeControl(functions = rfFuncs, method = "repeatedcv", number = repit,
+                       returnResamp = "all", allowParallel = TRUE, verbose = FALSE,
+                       seeds = seeds)
+
+# Se ejecuta la eliminación recursiva de predictores
+set.seed(342)
+rf_rfe <- rfe(ok ~ .,
+              data = tr.bank,
+              sizes = subsets,
+              metric = "Accuracy",
+              # El accuracy es la proporción de clasificaciones correctas
+              rfeControl = ctrl.rfe,
+              ntree = 500)
+
+```
+
+```{r eval=FALSE, include=FALSE}
+#Llamamos los objetos creados
+rf_rfe 
+rf_rfe$optVariables #variables seleccionadas
+rf_rfe$results #arroja los indicadores de accurancy y kappa del modelo segun num de var
+rf_rfe$fit #matriz de confusion del modelo final
+```
+
+
+```{r fig.pos="H"}
+t(rf_rfe$results[,1:3])%>%kable(digits = 2,caption="\\label{rf} Resultado de selección de variables mediante wrapper",booktabs=TRUE)%>%
+kable_styling(
+latex_options = c("condensed","hold_position"),
+position = "center",
+full_width = FALSE)
+
+t(rf_sbf$results[,1:3])%>%kable(digits = 2,caption="\\label{rfe} Resultado de selección de variables mediante filter, óptimo=10 variables",booktabs=TRUE)%>%
+kable_styling(
+latex_options = c("condensed","hold_position"),
+position = "center",
+full_width = FALSE)
+```
+
+# Estimación modelo: Random forest
+El primer modelo a seleccionar es un modelo *random forest* que es un tipo de modelo de aprendizaje automático que tiene detrás la metodología *bagging* mediante la cual se ajustan diversos modelos con diferentes subconjuntos aleatorios de los datos proporcionados seleccionado el aporte de mayor impacto de cada uno para elegir un modelo final. La potencia de estos modelos frente a los modelos *bagging* "tradicionales" reside en la elección aleatoria de los predictores lo que permite disminuir posibilidad de que variables con alta correlación se repitan en la iteración de los modelos haciendolos relativamente similares.
+
+El paquete *caret* posee una amplia potencia para poder realizar el entrenamiento de estos y otros modelos relacionados al mundo del *Machine Learning* en este caso el comando *train* permite entrenar un modelo usando diferente parámetros asi como una función control que permite ajustar el funcionamiento de este proceso de entrenamiento. Uno de los atributos mas importante de esta función de control es permitir realizar *sampling* mediante validación cruzada o boostrapping para poder modelar los múltiples modelos y evaluarlos sin necesidad de usar la data *test* lo que permite evaluar cada modelo internamente solo con los datos de train esto es lo que además permite calcular indicadores como el *OBB,out bag error*.
+
+A efectos prácticos, cuando se aplican métodos de *resampling* hay que tener en cuenta dos cosas: el coste computacional que implica ajustar múltiples veces un modelo, cada vez con un subconjunto de datos distinto, y la reproducibilidad en la creación de las particiones. Mediante el argumento *allowParallel=TRUE* en *caret * se permite paralelizar el proceso para que sea más rápido y establecer semillas (*seed*) para asegurar que cada *sampling* o partición pueda crearse de nuevo con exactamente las mismas observaciones.
+Con el paquete *e1071* y *dplyr* podemos usar el $method:ranger$ que permite tunear aleatoriamente no solo el hiperparámetro de cuantas predictoras seleccionar sino tambien el criterio que indican donde cortar los arboles asi como el tamaño minimo de los arboles para poder ser dividido. Hacemos un ejercicio con este metodo para difernciar los resultados de solo usar $tunelength$. Para el proceso de tunear se selecciona el argumento *tunegrid* que recibe un vector de valores o caracteres que indican los valores que seleccionar los hiperparámentros.
+
+
+## Hiperparámetros en random forest
+
+Otro aspecto a elegir mendiante *caret* es poder tunear el modelo mediante los hiperparámetros a usar esto es dejandole un intervalos de valores a elegir aleatoriamente para cada modelo iterativo que realiza.
+
+Con el paquete *e1071* y *dplyr* podemos usar el $method:ranger$ que permite tunear aleatoriamente no solo el hiperparámetro de cuantas predictoras seleccionar en cada modelo sino tambien el criterio que indican donde cortar los arboles asi como el tamaño minimo de estos para poder ser ramificados. Para el proceso de tunear se selecciona el argumento *tunegrid* que recibe un vector de valores o carácteres que indican los valores que seleccionar los hiperparámetros. Seleccionamos un total de 1000 arboles, el comando por defecto usa 500. Para *mtry* se toma en cuenta que por defecto el valor que usan estos modelos es $m=\sqrt m$ pero tambien podemos seleccionarlo como un tercio del número de variables(p) $m=\frac{p}{3}$ o para evidencia de correlación se recomienda $m$ pequeñas.
+
+```{r fig.pos="H"}
+hip<-rbind(mtry=c(3,6,8,11,12),splitrule=c("gini"),
+                   min.node.size=c(2,4,6,8,10,12))
+hip%>%kable(digits = 2,caption="\\label{hip} Hiperparámetros utilizados",booktabs=TRUE)%>%
+kable_styling(
+latex_options = c("condensed","hold_position"),
+position = "center",
+full_width = FALSE)
+```
+
+Como regla de partición de un árbol se usa el *Índice gini* que es una medida de la varianza total en el conjunto de las $k$  clases del nodo $m$. Se considera una medida de pureza del nodo.
+
+$$G_m=\sum_{k=1}^{K} \hat p_{mk}(1-\hat p_{mk})$$
+Cuando $\hat p_{mk}$ es cercano a 0 o 1 significa que el nodo evaluado contiene mayoría de sus obervaciones de una sola clase. Como consecuencia, cuanto mayor sea la pureza del nodo, menor el valor del índice ($G$).
+```{r}
+#MODELO CON TUNEGRID
+#=================================================================================
+nm<-rf_rfe$optVariables #variables seleccionadas
+frmla<-as.formula(paste("ok ~",paste(nm,collapse = "+")))
+#HIPERPARAMETROS
+#Usamos gini para clasificacion. MTRY lo ponemos como la raiz cuadrada mas 2 , y el ultimo valor igual al numero de columnas del datset. El min de nodos se pone int 
+#==============================================================================
+hiper<-expand.grid(mtry=c(3,6,8,11,12),splitrule=c("gini"),
+                   min.node.size=c(2,3,4,5))
+
+#SEMILLA
+#================================================================================
+repeticiones<-5
+particiones<-10
+set.seed(123)
+seeds <- vector(mode = "list", length = (particiones * repeticiones) + 1)
+for (i in 1:(particiones * repeticiones)) {
+  seeds[[i]] <- sample.int(1000, nrow(hiper))
+}
+seeds[[(particiones * repeticiones) + 1]] <- sample.int(1000, 1)
+
+# DEFINICIÓN DEL ENTRENAMIENTO
+#===============================================================================
+ctrl.train<- trainControl(method = "repeatedcv", number = repeticiones,
+                       returnResamp = "all", allowParallel = TRUE, verbose = FALSE,
+                       seeds = seeds, classProbs=TRUE,savePredictions = "final")
+
+
+# AJUSTE DEL MODELO
+# ==============================================================================
+set.seed(342)
+nm<-rf_rfe$optVariables #variables seleccionadas
+frmla<-as.formula(paste("ok ~",paste(nm,collapse = "+")))
+
+modelo_rf_grid <- train(frmla, 
+                   data = tr.bank,
+                   method = "ranger",
+                   tuneGrid = hiper,
+                   #tuneLength=5,
+                   metric = "Accuracy",
+                   trControl = ctrl.train,
+                   importance="impurity",
+                   num.tree=1000)
+
+```
+
+
+## Resultados del modelo RF
+
+
+
+
+```{r fig.align='center'}
+#TABLAS DE RESULTADOS :accurancy, kappa
+#====================================================================
+valores<-as.matrix(modelo_rf_grid$finalModel[c(2,3:5,9,12)])
+OBB<-c(round(modelo_rf_grid$finalModel$prediction.error,3)*100)
+
+
+rbind(valores,OBB)%>%kable(digits = 2,booktabs=TRUE,caption="\\label{val} Valores resultantes de los hiperparametros del modelo")%>%
+kable_styling(
+latex_options = c("condensed","hold_position"),
+position = "center",
+full_width = FALSE)
+
+# MATRIZ DE CONFUSION RESULTANTE DEL PROCESO DE CROSS VALIDATION
+#confu.t<-confusionMatrix.train(modelo_rf_grid)
+#fourfoldplot(round(confu.t$table,2), color = c("red4", "cyan4"),
+ #            conf.level = 0, margin = 1, main = "")
+
+#[,c(3:4,6,8)]
+
+```
+
+
+```{r  fig.align='center',fig.pos="H"}
+#GRAFICOS:
+#=====================================================================
+plot(modelo_rf_grid,ylab="ACC(para validación cruzada)",xlab="Predictores")
+```
+
+# Evaluación del ajuste del modelo
+
+Una consecuencia del desequilibrio de las clases es que el rendimiento es generalmente muy sesgado contra la clase con las frecuencias más pequeñas. Por ejemplo, si los datos tienen una mayoría de muestras pertenecientes a la primera clase y muy pocas en la segunda clase, gran parte de los modelos predictivos maximizarán la precisión al predecir que todo será de la primera clase. Como resultado, generalmente hay un desequilibrio entre la sensibilidad y la especificidad. 
+
+
+
+
+```{r fig.align='center',fig.pos="H"}
+#EVALUACION DE PREDICCION DEL MODELO
+#=====================================================================
+#Predicciones
+predicciones <-predict(modelo_rf_grid,te.bank)
+
+#Matriz de confusion a partir de los datos de entrenamiento
+#confusionMatrix(modelo_rf_grid)
+
+# Calcula la matriz de confusion
+confu.mat<-confusionMatrix( te.bank$ok,predicciones)
+
+fourfoldplot(confu.mat$table, color = c("cyan4", "gray"),
+             conf.level = 0, margin = 1, main = "") #graficos
+
+#defaultSummary(data = data.frame(obs = te.bank$ok, pred = predicciones))
+
+```
+
+
+```{r}
+evalua_rf<-c(confu.mat$overall[1:2],confu.mat$byClass[1:4])*100
+
+t(evalua_rf)%>%kable(digits = 2,booktabs=TRUE,caption="\\label{valsvm} Evaluación del modelo Random forest")%>%
+kable_styling(latex_options = c("condensed","hold_position"),
+position = "center",
+full_width = FALSE)
+```
+
+Otro indicador a utilizar proviene de la *Curva ROC *:
+
+```{r fig.align='center',fig.pos="H"}
+#CURVA ROC
+#===================================================================
+#creamos nueva vez las prediciones en formato prob
+trellis.par.set(caretTheme())
+te.bank$pred <- predict(modelo_rf_grid, te.bank,probability=TRUE)
+#roc_curve = roc(modelo_rf_grid$pred$obs, factor(modelo_rf_grid$pred$pred,ordered=TRUE))
+roc_curve = roc(te.bank$ok, factor(te.bank$pred,ordered=TRUE))
+plot(roc_curve, col="red3", lwd=2,print.auc=TRUE)
+
+
+#twoClassSummary(data = data.frame(obs = te.bank$ok, pred =te.bank$pred),lev=levels(te.bank$ok))
+
+
+```
+## Importancia de variables
+
+en problemas de clasificación los modelos basados en el método *ranger* calculan la impureza a partir del *índice Gini*  que consiste en que para cada árbol, se registra la precisión de predicción en la parte fuera de bolsa de los datos. Luego se hace lo mismo después de permutar cada variable predictora, la diferencia entre las dos precisiones se promedia en todos los árboles y se normaliza mediante el error estándar.
+
+
+
+```{r fig.align='center'}
+#IMPORTANCIA DE LAS VARIABLES
+#============================================================================
+
+# Importancia
+importancia_pred <- modelo_rf_grid$finalModel$variable.importance %>%
+                    enframe(name = "predictores", value = "importancia")
+options(repr.plot.width =9, repr.plot.height =9) #esto hace el grafico mas amplio en pdf
+# Gráfico
+ggplot(
+  data = importancia_pred,
+  aes(x    = reorder(predictores, importancia),
+      y    = importancia,
+      fill = importancia)
+) +
+labs(x = "Predictores", title = "Importancia predictores") +
+geom_col() +
+scale_fill_viridis_c() +
+coord_flip() +
+theme_bw() +
+theme(legend.position = "none")
+```
+
+
+
+# Remuestreo para rebalancear muestra
+
+Una técnica para resolver el efecto del desequilibrio de las clases en la muestra de entreaniemitno que genera la baja en la potencia de especificidad es submuestrear los datos. En *caret* podemos indicar al algoritmo que haremos uso de este técnica seleccionando una de sus opciones , en este documento mostramos el resultado de dos de ellas que son:
+
+**Muestreo descendente**: crea subconjuntos aleatorios de todas las clases del conjunto de entrenamiento para que sus frecuencias de clase coincidan con la clase menos prevalente.
+
+**Muestreo ascendente**: hace que el algoritmo muestree aleatoriamente (con reemplazo) la clase minoritaria para que tenga el mismo tamaño que la clase mayoritaria.
+
+Otros métodos híbridos son *ROSE* y *STOPE* que reducen el muestreo de la clase mayoritaria y sintetizan nuevos puntos de datos en la clase minoritaria.
+
+```{r}
+#PROBAMOS MODELOS CON SUBMUESTREO PARA TRATAR EL DESBALANCE EN LA MUESTRA
+#===============================================================================
+
+# DEFINICIÓN DEL ENTRENAMIENTO
+#===============================================================================
+ctrl.trainv1<- trainControl(method = "repeatedcv", number = repeticiones,
+               returnResamp = "all", allowParallel = TRUE, verbose = FALSE,
+               seeds = seeds, classProbs=TRUE,savePredictions = "final",sampling = "up")
+
+# MODELO UP
+# ==============================================================================
+set.seed(342)
+modelo_up <- train(frmla, 
+                   data = tr.bank,
+                   method = "ranger",
+                   tuneGrid = hiper,
+                   #tuneLength=5,
+                   metric = "Accuracy",
+                   trControl = ctrl.trainv1,
+                   importance="impurity",
+                   num.tree=1000)
+
+set.seed(342)
+ctrl.trainv1$sampling <- "down"
+modelo_down <- train(frmla, 
+                   data = tr.bank,
+                   method = "ranger",
+                   tuneGrid = hiper,
+                   #tuneLength=6,
+                   metric = "Accuracy",
+                   trControl = ctrl.trainv1,
+                   importance="impurity",
+                   num.tree=1000)
+
+```
+
+
+```{r fig.align='center',fig.cap="\\label{plot10}Resultados de modelos remuestrado",fig.pos="H"}
+#GRAFICOS DE ACCURACY
+#===========================================================================
+p.1<-ggplot(modelo_up)+
+   theme(legend.title=element_blank(),legend.position="top")+
+ylab("ACC(modelo up)")+xlab("Nodos minimo")
+
+p.2<-ggplot(modelo_down)+ylab("ACC(modelo down)")+xlab("Nodos minimo")+        theme(legend.title=element_blank(),legend.position="top")
+
+ggarrange(p.1,p.2)
+
+```
+
+
+
+```{r fig.align='center',fig.cap="\\label{plot11}Matriz de confusión: modelos con remuestreo",fig.pos="H"}
+#Confusion
+#============================================================================
+par(mfrow=c(1,2))
+pred_down <-predict(modelo_down,te.bank)
+confu.down<-confusionMatrix( te.bank$ok,pred_down)
+fourfoldplot(confu.down$table, color = c("cyan4", "gray"),
+             conf.level = 0, margin = 1, main = "Modelo resampling:down")
+
+pred_up <-predict(modelo_up,te.bank)
+confu.up<-confusionMatrix( te.bank$ok,pred_up)
+fourfoldplot(confu.up$table, color = c("cyan4", "gray"),
+             conf.level = 0, margin = 1, main = "Modelo resampling:up")
+```
+
+
+
+```{r fig.align='center',fig.cap="\\label{plot6}Curvas ROC de modelos remuestrados",fig.pos="H"}
+
+#CRUVAS ROC
+#=========================================================================
+par(mfrow=c(1,2))
+roc_up= roc(te.bank$ok, factor(pred_up,ordered=TRUE))
+plot(roc_up, col="red3", lwd=2,print.auc=TRUE,main="Modelo resampling:up")
+
+roc_down= roc(te.bank$ok, factor(pred_down,ordered=TRUE))
+plot(roc_down, col="red3", lwd=2,print.auc=TRUE,main="Modelo resampling=down")
+
+
+sum.up<-defaultSummary(data = data.frame(obs = te.bank$ok, pred = pred_up))
+sum.down<-defaultSummary(data = data.frame(obs = te.bank$ok, pred = pred_down))
+```
+
+
+
+
+```{r fig.pos="H"}
+evalua_general<-c(confu.mat$overall[1:2],confu.mat$byClass[1:7])*100
+evalua_up<-c(confu.up$overall[1:2],confu.up$byClass[1:7])*100
+evalua_down<-c(confu.down$overall[1:2],confu.down$byClass[1:7])*100
+
+
+cbind(evalua_general,evalua_up,evalua_down)%>%kable(digits = 2,booktabs=TRUE,caption="\\label{rfm} Evaluación de modelos con y sin remuestreo",col.names = c("Modelo general","Modelo up","Modelo down"))%>%
+kable_styling(latex_options = c("condensed","hold_position"),
+position = "center",
+full_width = FALSE)
+
+mediciones<-cbind(confu.mat$byClass[1:5],confu.up$byClass[1:5],confu.down$byClass[1:5])*100
+
+```
+
+
+
+\newpage
+
+# Modelos basados en máquina de vector soporte (SVM)
+
+Las máquinas de soporte vectorial (SVM por sus siglas en inglés) se fundamentan en el Maximal Margin Classifier, que está basado en el concepto de hiperplano óptimo para casos donde las clases puedan ser separadas linealmente caso poco habitual y que incluso si pasara el margen seria muy estrecho (margen duro) una adaptación de esto se basa en uso de "margenes blandos" donde se permite alguna clasificación errónea en aras de una mayor solidez de las observaciones individuales. Esta generalización es la que se denomina clasificador de vector soporte.
+
+Los SVM son modelos de clasificación que mapea las observaciones como puntos en el espacio para que las categorías se dividan por dichos hiperplanos. Luego, las nuevas observaciones se pueden mapear en el espacio para la predicción. El algoritmo SVM encuentra el hiperplano de separación óptimo utilizando un mapeo no lineal a una dimensión suficientemente alta. El hiperplano se define por las observaciones que se encuentran dentro de un margen optimizado por un hiperparámetro a los que se les asigna un coste (error). Estas observaciones se denominan vectores de soporte.
+
+Las estimaciones se pueden configurar en función de un conjunto de parámetros desconocidos ($\alpha_i$) y los puntos de datos que funcionan como soporte. La forma básica del cálculo de un SVM sería:
+
+$$f(x)=\beta_0+\sum_{i=1}^{n}\alpha_i(x,x_i)$$
+El gran inconveniente de esta es la presunción de linealidad. Las máquinas de vectores de soporte hacen frente a esto de una manera específica utilizando kernels:
+
+$$f(x)=\beta_0+\sum_{i=1}^{n}\alpha_iK(x,x_i)$$
+
+Con $K$ como una generalización del producto interno con forma $(x,x_i)$ y según la separación de las clases podemos elegir entre una función lineal, polinomica ,radial y otras.
+
+La solución tiene la interesante propiedad de que solo las observaciones sobre o dentro del margen afectan al hiperplano. Estas observaciones se conocen como vectores de soporte. A medida que aumenta la constante ($\beta_0$), aumenta el número de observaciones infractoras y, por lo tanto, aumenta el número de vectores de apoyo. Esta propiedad hace que el algoritmo sea robusto para las observaciones extremas lejos del hiperplano.
+
+En este caso se usara la función radial que suele proveer una separación mejor que la polinomica y descartamos la lineal porque nuestros datos no tienen separación perfecta que se pueda modelar en un hiperplano. En ese orden, el kernel quedaria como: En ese orden, el kernel quedaria como:
+
+$$K(x,x_i)=exp(- \frac{\|x-x_i\|^2}{2\sigma^2})$$
+Nueva vez entrenaremos un modelo mediante *train* usando la función *svmRadial* en el se intenta maximizar el ancho del margen entre clases mediante un límite de clase radial la función permite tunear 2 hiperparámetros que serian $C$ y $sigma$, sabemos que C representa el costo de ajustar cada punto a la región que le corresponde mientras $\sigma^2$ mide el grado de amplitud de la curva de distribución gaussiana, para valores grandes la separaciones resultan mas suaves y flexibles (blandas) pudiendo caer en malas clasificaciones mientras $\sigma^2$ pequeños tenemos margenes mas rígidos e inflexibles pudiendo caer en *overfitting*. En la literatura se suele recomendar una combinación óptima como $\sigma^2$ grandes y $C$ pequeños para un buena clasificación.
+
+
+```{r}
+
+# HIPERPARÁMETROS, NÚMERO DE REPETICIONES Y SEMILLAS PARA CADA REPETICIÓN
+#===============================================================================
+particiones  <- 5
+repeticiones <- 10
+
+
+# Hiperparámetros
+#==================================================================
+hiperparametros<-c(sigma = c(0.001, 0.01, 0.1, 0.5, 1),
+                  C = c(1 , 20, 50, 100, 200, 500, 700))
+
+set.seed(123)
+
+# DEFINICIÓN DEL ENTRENAMIENTO
+#===============================================================================
+control_train <- trainControl(method = "repeatedcv", number = particiones,
+                 repeats = repeticiones,  returnResamp = "final",
+                 verbose = FALSE,allowParallel = TRUE,savePredictions = TRUE,
+                 classProbs = TRUE,summaryFunction = twoClassSummary ,sampling="up")
+
+# AJUSTE DEL MODELO
+# ==============================================================================
+set.seed(342)
+modelo_svm <- train(frmla,
+                  data = tr.bank,
+                   method = "svmRadial",
+                   #tuneGrid = hiperparametros,
+                   tunelength=7,
+                   metric = "ROC",
+                   importance="ROC",
+                   trControl = control_train)
+```
+
+
+# Evaluación del modelo SVM
+
+En esta ocasión haremos uso del argumento *tuneLength* que corresponde al número de valores únicos para los hiperparámetros de ajuste que el paquete *caret* considerará al formar las combinaciones de estos mediante el algoritmo determinará automáticamente los valores que debe tomar cada parámetro. Y basado en la selección del modelo para RF reutilizamos el método *resampling:up* .
+
+
+```{r fig.pos="H",fig.align='center',fig.cap="\\label{svmconfu}Resultado de parámetros del modelo SVMPoly"}
+plot(modelo_svm,ylab="Roc (por validación cruzada)",xlab="Grados del polinomios")
+```
+
+```{r}
+modelo_svm$bestTune%>%kable(digits = 2,booktabs=TRUE,caption="\\label{val1} Valores resultantes de los hiperparametros del modelo")%>%
+kable_styling(
+latex_options = c("condensed","hold_position"),
+position = "center",
+full_width = FALSE)
+```
+
+El resultado de la matriz de confusión:
+
+```{r fig.pos="H",fig.align='center',fig.cap="\\label{svmconfu}Matriz de confusión de modelo svmPoly"}
+# Calcula la matriz de confusion
+te.bank$pred.svm<-predicciones <-predict(modelo_svm,te.bank)
+confu.svm<-confusionMatrix( te.bank$ok,te.bank$pred.svm)
+fourfoldplot(confu.svm$table, color = c("azure4", "darkgoldenrod3"),
+             conf.level = 0, margin = 1, main = "") #graficos
+
+
+```
+ 
+Los resultado al evaluar el modelo  en los datos de prueba:
+```{r fig.pos="H"}
+evalua<-c(confu.svm$overall[1:2],confu.svm$byClass[1:7])*100
+
+t(evalua)%>%kable(digits = 2,booktabs=TRUE,caption="\\label{valsvm} Evaluación del modelo SVMPoly")%>%
+kable_styling(latex_options = c("condensed","hold_position"),
+position = "center",
+full_width = FALSE)
+
+```
+La curva ROC y el AUC mejoran significativamente (modelos con AUC $\geq$ 70% suelen ser catalogados como "eficientes") esta vez se observa el espacio debajo de la curva algo más simetrica. 
+
+```{r fig.align='center',fig.pos="H",fig.cap="\\label{rocsvm}Curva ROC para modelo SVM ajustado a datos de pruebas"}
+#Curva ROC
+roc_curve_svm = roc(te.bank$ok, factor(te.bank$pred.svm,ordered=TRUE))
+plot(roc_curve_svm, col="red3", lwd=3,print.auc=TRUE)
+```
+
+
+# Comparación de modelos de clasfisicación 
+
+## Medidas de bondad de ajuste
+Basado en los resultados obtenidos tenemos mejor sensibilidad en el modelo estimado mediante SVM  pero mejor especificidad cuando usamos RF aunque la diferencia de esto último en términos relativos sea baja. Adicionalmente, como un buen objetivo se observa que con el modelo SVM se obtiene una distribución proporcionada de 74.3 y 71.1 en prevalencia sobre casos positivos y negativos respectivamente algo que visualizamos en la figura \ref{svmconfu} donde obtenemos similar clasificación en porcentajes para los clientes que son verdaderamente *Satisfecho* y verdaderamente *No satisfecho*; aunque esta "mejora" se logra a costa de clasificar un mayor número de falsos positivos en relación al modelo de RF.
+
+
+```{r fig.pos="H"}
+evalua_up<-c(confu.up$overall[1:2],confu.up$byClass[1:7])*100
+evalua<-c(confu.svm$overall[1:2],confu.svm$byClass[1:7])*100
+
+cbind(evalua_up,evalua)%>%kable(digits = 2,booktabs=TRUE,caption="\\label{valsvmrf} Evaluación del modelos Randon forest vs SVMPoly",col.names = c("Modelo RF","Modelo SVM"))%>%
+kable_styling(latex_options = c("condensed","hold_position"),
+position = "center",
+full_width = FALSE)
+```
+
+```{r fig.align='center',fig.cap="\\label{plot11}Matriz de confusión: Comparación de modelos",fig.pos="H"}
+#Confusion
+#============================================================================
+par(mfrow=c(1,2))
+
+fourfoldplot(confu.up$table, color = c("cyan4", "azure4"),
+             conf.level = 0, margin = 1, main = "Modelo RF:up")
+
+
+fourfoldplot(confu.svm$table, color = c( "darkgoldenrod3","azure4"),
+             conf.level = 0, margin = 1, main = "Modelo SVM:up")
+```
